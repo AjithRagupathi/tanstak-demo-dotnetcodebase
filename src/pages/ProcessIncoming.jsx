@@ -1,113 +1,163 @@
-// import React, { useEffect, useState } from "react";
-// import DataTable from "../components/DataTable/DataTable";
-// import { findurColumns } from "../columns/findurColumns";
-// import { incomingWireColumns } from "../columns/incomingWireColumns";
-// import { findurMockData } from "./mockData";
-
-// export default function ProcessIncoming() {
-//   const [incomingWires, setIncomingWires] = useState([]);
-//   const [findurItems, setFindurItems] = useState([]);
-
-//   const [selectedWires, setSelectedWires] = useState([]);
-//   const [selectedFindur, setSelectedFindur] = useState([]);
-
-//   useEffect(() => {
-//     // Using mock data for now
-//     setFindurItems(findurMockData);
-//   }, []);
-
-//   const submitMatch = () => {
-//     if (selectedRows.length === 0) {
-//       alert("Please select at least one row");
-//       return;
-//     }
-
-//     const selectedIds = selectedRows.map((row) => row.original.tradeId);
-
-//     alert("Selected Trade IDs:\n" + selectedIds.join(", "));
-//   };
-
-//   return (
-//     <>
-//       <h2>Incoming Wires</h2>
-
-//       <DataTable
-//         data={incomingWires}
-//         columns={incomingWireColumns}
-//         onSelectionChange={setSelectedWires}
-//       />
-
-//       <h2>Findur Items</h2>
-
-//       <DataTable
-//         data={findurItems}
-//         columns={findurColumns}
-//         onSelectionChange={setSelectedFindur}
-//       />
-
-//       <button onClick={submitMatch}>Match Selected</button>
-//     </>
-//   );
-// }
 import React from "react";
 import DataTable from "../components/DataTable/DataTable";
 import { incomingWireColumns } from "../columns/IncomingWireColumn";
 import { findurColumns } from "../columns/findurColumns";
-import { api } from "../api/processInomingApi";
+import { api } from "../api/processIncomingApi";
 
 export default function ProcessIncoming() {
+  const [incomingWires, setIncomingWires] = React.useState([]);
+  const [findurItems, setFindurItems] = React.useState([]);
   const [selectedWires, setSelectedWires] = React.useState([]);
   const [selectedFindurs, setSelectedFindurs] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
 
-  const incomingWires = [
-    { id: 1, wireNumber: "W001", amount: 1000 },
-    { id: 2, wireNumber: "W002", amount: 2000 },
-  ];
+  // Load initial data
+  React.useEffect(() => {
+    loadData();
+  }, []);
 
-  const findurItems = [
-    { id: 1, findurId: "F001", amount: 1000 },
-    { id: 2, findurId: "F002", amount: 2000 },
-  ];
-
-  const handleWireAction = (action, wire) => {
-    if (action === "exception") {
-      api.wireException(wire);
+  // Separate function to reload data (stable)
+  const loadData = React.useCallback(async () => {
+    try {
+      const [wires, findurs] = await Promise.all([
+        api.getWires(),
+        api.getFindurs(),
+      ]);
+      setIncomingWires(wires);
+      setFindurItems(findurs);
+    } catch (err) {
+      console.error("Failed to load data", err);
     }
-  };
+  }, []);
 
-  const handleFindurAction = (action, findur) => {
-    if (action === "exception") api.findurException(findur);
-    if (action === "move") api.moveToOutgoing(findur);
-  };
+  const handleWireAction = React.useCallback(
+    async (action, wire) => {
+      try {
+        setLoading(true);
+        if (action === "exception") {
+          // Send exception to backend
+          await api.wireException(wire);
 
-  const handleSubmit = () => {
+          // Re-fetch updated data from backend
+          await loadData();
+
+          alert(
+            `Wire ${wire.wireNumber} exception recorded and removed from list`
+          );
+        }
+      } catch (error) {
+        alert("Error: " + error.message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadData]
+  );
+
+  const handleFindurAction = React.useCallback(
+    async (action, findur) => {
+      try {
+        setLoading(true);
+        if (action === "exception") {
+          // Send exception to backend
+          await api.findurException(findur);
+
+          // Re-fetch updated data from backend
+          await loadData();
+
+          alert(
+            `Findur ${findur.findurId} exception recorded and removed from list`
+          );
+        }
+        if (action === "move") {
+          // Send move to backend
+          await api.moveToOutgoing(findur);
+
+          // Re-fetch updated data from backend
+          await loadData();
+
+          alert(
+            `Findur ${findur.findurId} moved to outgoing and removed from list`
+          );
+        }
+      } catch (error) {
+        alert("Error: " + error.message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadData]
+  );
+
+  // Sum function to calculate total amount
+  const sum = (items) => items.reduce((s, it) => s + (it.amount || 0), 0);
+
+  const handleSubmit = async () => {
     if (selectedWires.length === 0 || selectedFindurs.length === 0) {
       alert("Must select at least one wire and one Findur transaction");
       return;
     }
 
-    api.submitMatching(selectedWires, selectedFindurs);
-    alert("Matched successfully");
+    // Basic validation: totals must equal
+    const totalWires = sum(selectedWires);
+    const totalFindurs = sum(selectedFindurs);
+    if (totalWires !== totalFindurs) {
+      alert(
+        `Amounts do not match: wires total ${totalWires} vs findurs total ${totalFindurs}`
+      );
+      return;
+    }
+
+    // Optionally additional checks here (ABA matching, count limits, etc.)
+    try {
+      setLoading(true);
+      await api.submitMatching(selectedWires, selectedFindurs);
+
+      // Re-fetch updated data
+      await loadData();
+
+      // Clear selections
+      setSelectedWires([]);
+      setSelectedFindurs([]);
+      alert("Matched successfully");
+    } catch (error) {
+      alert("Error: " + error.message);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // Memoize columns so they don't get recreated on each render
+  const incomingCols = React.useMemo(
+    () => incomingWireColumns(handleWireAction),
+    [handleWireAction]
+  );
+
+  const findurCols = React.useMemo(
+    () => findurColumns(handleFindurAction),
+    [handleFindurAction]
+  );
 
   return (
     <>
-      <h2>Incoming Wires</h2>
+      <h2>Incoming Wires ({incomingWires.length})</h2>
       <DataTable
         data={incomingWires}
-        columns={incomingWireColumns(handleWireAction)}
+        columns={incomingCols}
         onSelectionChange={setSelectedWires}
       />
 
-      <h2>Findur Items</h2>
+      <h2>Findur Items ({findurItems.length})</h2>
       <DataTable
         data={findurItems}
-        columns={findurColumns(handleFindurAction)}
+        columns={findurCols}
         onSelectionChange={setSelectedFindurs}
       />
 
       <br />
-      <button onClick={handleSubmit}>Submit</button>
+      <button onClick={handleSubmit} disabled={loading}>
+        {loading ? "Processing..." : "Submit"}
+      </button>
     </>
   );
 }
